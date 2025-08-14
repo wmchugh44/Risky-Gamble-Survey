@@ -9,7 +9,7 @@ import streamlit as st
 # ---------- Page Setup ----------
 st.set_page_config(page_title="Risk Preference Survey", layout="wide")
 st.title("Risk Preference Survey")
-st.caption("build: consolidated-robust-1.2")
+st.caption("build: consolidated-robust-2.0")
 
 # ---------- Utilities ----------
 def format_money(x: float) -> str:
@@ -41,59 +41,111 @@ def expected_value(prospect: Dict) -> float:
     return outs[0]*probs[0] + outs[1]*probs[1]
 
 def check_consistency(choices: List[Optional[str]], amounts: List[float]) -> Optional[str]:
-    """Return an error string if choices violate monotonicity; else None. amounts are descending (largest to smallest)."""
+    """Return an error string if choices violate monotonicity; else None."""
+    # Determine if this is gains (ascending) or losses (descending by magnitude)
+    is_gains = all(amt >= 0 for amt in amounts)
+    
     for i, ch in enumerate(choices):
         if ch == "prospect":
-            for j in range(i+1, len(choices)):
-                if choices[j] == "sure":
-                    return "Choices are inconsistent: chose gamble at a higher sure amount but chose sure at a lower amount."
+            if is_gains:
+                # For gains (ascending): if prefer gamble at amount X, must prefer gamble at higher amounts
+                for j in range(i+1, len(choices)):
+                    if choices[j] == "sure":
+                        return f"Choices are inconsistent: chose gamble at {format_money(amounts[i])} but chose sure at higher amount {format_money(amounts[j])}."
+            else:
+                # For losses (descending by magnitude): if prefer gamble at amount X, must prefer gamble at smaller magnitude amounts
+                for j in range(0, i):
+                    if choices[j] == "sure":
+                        return f"Choices are inconsistent: chose gamble at {format_money(amounts[i])} but chose sure at smaller magnitude {format_money(amounts[j])}."
         if ch == "sure":
-            for j in range(0, i):
-                if choices[j] == "prospect":
-                    return "Choices are inconsistent: chose sure at a lower sure amount but chose gamble at a higher amount."
+            if is_gains:
+                # For gains (ascending): if prefer sure at amount X, must prefer sure at lower amounts
+                for j in range(0, i):
+                    if choices[j] == "prospect":
+                        return f"Choices are inconsistent: chose sure at {format_money(amounts[i])} but chose gamble at lower amount {format_money(amounts[j])}."
+            else:
+                # For losses (descending by magnitude): if prefer sure at amount X, must prefer sure at higher magnitude amounts
+                for j in range(i+1, len(choices)):
+                    if choices[j] == "prospect":
+                        return f"Choices are inconsistent: chose sure at {format_money(amounts[i])} but chose gamble at higher magnitude {format_money(amounts[j])}."
     return None
 
 def check_monotonic_violation(choices: List[Optional[str]], amounts: List[float], new_choice: str, idx: int) -> Tuple[bool, str]:
     """
-    Return (violation: bool, message: str). `amounts` is descending (largest first).
+    Return (violation: bool, message: str).
     Monotonicity (Tversky & Kahneman, 1992):
-      - If you prefer the gamble over a sure amount X, you must also prefer it over any smaller sure amount.
-      - If you prefer a sure amount X over the gamble, you must also prefer any larger sure amount.
+    - Gains (ascending): If you prefer the gamble over amount X, you must prefer it over any smaller amount.
+                        If you prefer amount X over the gamble, you must prefer any larger amount over the gamble.
+    - Losses (descending by magnitude): If you prefer the gamble over paying amount X, you must prefer it over paying any smaller magnitude.
+                                       If you prefer paying amount X to avoid the gamble, you must prefer paying any larger magnitude.
     """
     temp = list(choices)
     temp[idx] = new_choice
+    is_gains = all(amt >= 0 for amt in amounts)
 
     for i, ch in enumerate(temp):
         if ch is None:
             continue
 
         if ch == "prospect":
-            for j in range(i + 1, len(temp)):
-                if temp[j] == "sure":
-                    msg = (
-                        "Monotonicity violation.\n\n"
-                        f"You chose the gamble instead of {format_money(amounts[i])}, "
-                        f"but also chose a sure amount of {format_money(amounts[j])} on a lower row.\n\n"
-                        "Monotonicity (Tversky & Kahneman, 1992): "
-                        "If a gamble is better than some amount of money, it should be better than any smaller amount."
-                    )
-                    return True, msg
+            if is_gains:
+                # For gains (ascending): if prefer gamble at X, must prefer gamble at higher amounts
+                for j in range(i + 1, len(temp)):
+                    if temp[j] == "sure":
+                        msg = (
+                            "Monotonicity violation.\n\n"
+                            f"You chose the gamble instead of receiving {format_money(amounts[i])}, "
+                            f"but chose to receive {format_money(amounts[j])} instead of the gamble.\n\n"
+                            "Monotonicity (Tversky & Kahneman, 1992): "
+                            "If a gamble is better than receiving some amount, it should be better than receiving any larger amount."
+                        )
+                        return True, msg
+            else:
+                # For losses (descending by magnitude): if prefer gamble at X, must prefer gamble at smaller magnitudes
+                for j in range(0, i):
+                    if temp[j] == "sure":
+                        msg = (
+                            "Monotonicity violation.\n\n"
+                            f"You chose the gamble instead of paying {format_money(abs(amounts[i]))}, "
+                            f"but chose to pay {format_money(abs(amounts[j]))} to avoid the gamble.\n\n"
+                            "Monotonicity (Tversky & Kahneman, 1992): "
+                            "If a gamble is better than paying some amount, it should be better than paying any smaller amount."
+                        )
+                        return True, msg
 
         if ch == "sure":
-            for j in range(0, i):
-                if temp[j] == "prospect":
-                    msg = (
-                        "Monotonicity violation.\n\n"
-                        f"You chose a sure amount of {format_money(amounts[i])}, "
-                        f"but chose the gamble over a larger sure amount of {format_money(amounts[j])} on an upper row.\n\n"
-                        "Monotonicity (Tversky & Kahneman, 1992): "
-                        "If a certain amount is better than the gamble, any larger amount should also be better."
-                    )
-                    return True, msg
+            if is_gains:
+                # For gains (ascending): if prefer sure at X, must prefer sure at lower amounts
+                for j in range(0, i):
+                    if temp[j] == "prospect":
+                        msg = (
+                            "Monotonicity violation.\n\n"
+                            f"You chose to receive {format_money(amounts[i])} instead of the gamble, "
+                            f"but chose the gamble over receiving {format_money(amounts[j])}.\n\n"
+                            "Monotonicity (Tversky & Kahneman, 1992): "
+                            "If receiving some amount is better than the gamble, receiving any smaller amount should also be better than the gamble."
+                        )
+                        return True, msg
+            else:
+                # For losses (descending by magnitude): if prefer sure at X, must prefer sure at higher magnitudes
+                for j in range(i + 1, len(temp)):
+                    if temp[j] == "prospect":
+                        msg = (
+                            "Monotonicity violation.\n\n"
+                            f"You chose to pay {format_money(abs(amounts[i]))} to avoid the gamble, "
+                            f"but chose the gamble over paying {format_money(abs(amounts[j]))}.\n\n"
+                            "Monotonicity (Tversky & Kahneman, 1992): "
+                            "If paying some amount is better than the gamble, paying any larger amount should also be better than the gamble."
+                        )
+                        return True, msg
 
     return False, ""
 
 def compute_certainty_equivalent(choices: List[str], amounts: List[float]) -> float:
+    """Compute certainty equivalent from the switch point between sure and prospect choices."""
+    is_gains = all(amt >= 0 for amt in amounts)
+    
+    # Find the switch point
     last_sure_idx = None
     first_prospect_idx = None
     for i, ch in enumerate(choices):
@@ -101,12 +153,24 @@ def compute_certainty_equivalent(choices: List[str], amounts: List[float]) -> fl
             last_sure_idx = i
         if ch == "prospect" and first_prospect_idx is None:
             first_prospect_idx = i
+    
     if last_sure_idx is None:
-        return amounts[-1]
+        # All prospect choices - CE is lower than the smallest amount shown
+        return amounts[-1] if is_gains else amounts[0]
     if first_prospect_idx is None:
-        return amounts[0]
-    high = amounts[last_sure_idx]
-    low = amounts[first_prospect_idx]
+        # All sure choices - CE is higher than the largest amount shown
+        return amounts[0] if is_gains else amounts[-1]
+    
+    # Find the bounds for interpolation
+    if is_gains:
+        # For gains (ascending): last sure amount and first prospect amount
+        high = amounts[first_prospect_idx]  # Higher amount where switched to prospect
+        low = amounts[last_sure_idx]        # Lower amount still preferred sure
+    else:
+        # For losses (descending by magnitude): same logic but accounting for ordering
+        high = amounts[last_sure_idx]       # Amount where chose sure (closer to zero or further)
+        low = amounts[first_prospect_idx]   # Amount where switched to prospect
+    
     return round((high + low) / 2.0, 2)
 
 def linear_space_desc(high: float, low: float, n: int = 7) -> List[float]:
@@ -117,26 +181,31 @@ def linear_space_desc(high: float, low: float, n: int = 7) -> List[float]:
     return [round(high - k*step, 2) for k in range(n)]
 
 def generate_sure_amounts(prospect: Dict, phase: int, phase1_choices: Optional[List[str]] = None) -> List[float]:
-    """Return 7 sure amounts in **descending numeric order** (largest first).
-       For losses: '-$10' (closest to zero) should appear above '-$300'."""
+    """Return 7 sure amounts ordered for display.
+       Gains: ascending order (small to large) - e.g., [10, 20, 30, ..., 90]
+       Losses: descending by magnitude (closest to zero first) - e.g., [-10, -20, -30, ..., -90]"""
     outs = prospect["outcomes"]
     domain = "gain" if max(outs) > 0 else "loss"
     max_abs = max(abs(outs[0]), abs(outs[1]))
 
     if phase == 1:
-        # Build a descending-positive scaffold, then map correctly for domain
         hi = 0.9 * max_abs
         lo = 0.1 * max_abs
-        base_pos_desc = linear_space_desc(hi, lo, 7)  # e.g., [90, 75, 60, 45, 30, 15, 10]
         if domain == "gain":
-            return base_pos_desc  # [big ... small]
-        # For loss domain, we want [-10, -15, -30, ..., -90] (closest to 0 first)
-        return [-x for x in base_pos_desc[::-1]]
+            # Gains: ascending order (small to large)
+            return linear_space_desc(hi, lo, 7)[::-1]  # Reverse to get ascending
+        else:
+            # Losses: descending by magnitude (closest to zero first)
+            base_pos_desc = linear_space_desc(hi, lo, 7)  # [90, 75, 60, 45, 30, 15, 10]
+            return [-x for x in base_pos_desc[::-1]]  # [-10, -15, -30, ..., -90]
 
     # Phase 2: build from phase-1 bounds
     base = generate_sure_amounts(prospect, phase=1)
     if not phase1_choices:
-        return linear_space_desc(base[1], base[-2], 7)
+        if domain == "gain":
+            return linear_space_desc(base[-2], base[1], 7)[::-1]  # Ascending
+        else:
+            return linear_space_desc(base[1], base[-2], 7)  # Already correct order for losses
 
     last_sure = None
     first_prospect = None
@@ -147,17 +216,30 @@ def generate_sure_amounts(prospect: Dict, phase: int, phase1_choices: Optional[L
             first_prospect = i
 
     if last_sure is None and first_prospect is None:
-        return linear_space_desc(base[1], base[-2], 7)
+        if domain == "gain":
+            return linear_space_desc(base[-2], base[1], 7)[::-1]  # Ascending
+        else:
+            return linear_space_desc(base[1], base[-2], 7)
     if last_sure is None:
-        return linear_space_desc(base[-3], base[-1], 7)
+        if domain == "gain":
+            return linear_space_desc(base[-1], base[-3], 7)[::-1]  # Ascending
+        else:
+            return linear_space_desc(base[-3], base[-1], 7)
     if first_prospect is None:
-        return linear_space_desc(base[0], base[2], 7)
+        if domain == "gain":
+            return linear_space_desc(base[2], base[0], 7)[::-1]  # Ascending
+        else:
+            return linear_space_desc(base[0], base[2], 7)
 
     hi = base[last_sure]        # higher sure amount (numerically larger)
     lo = base[first_prospect]   # lower sure amount (numerically smaller)
     if hi < lo:
         hi, lo = lo, hi
-    return linear_space_desc(hi, lo, 7)
+    
+    if domain == "gain":
+        return linear_space_desc(lo, hi, 7)[::-1]  # Ascending for gains
+    else:
+        return linear_space_desc(hi, lo, 7)  # Descending by magnitude for losses
 
 def risk_attitude_from_ce(ce: float, ev: float) -> str:
     if ce < ev:
@@ -196,7 +278,11 @@ def init_state():
     if "current_choices" not in st.session_state:
         st.session_state.current_choices = [None] * 7
     if "amounts" not in st.session_state:
-        st.session_state.amounts = None
+        # Initialize amounts for the first prospect if we have prospects
+        if "prospects" in st.session_state and st.session_state.prospects:
+            st.session_state.amounts = generate_sure_amounts(st.session_state.prospects[0], phase=1)
+        else:
+            st.session_state.amounts = []
     if "phase1_choices" not in st.session_state:
         st.session_state.phase1_choices = []
     if "results" not in st.session_state:
@@ -228,7 +314,6 @@ if not st.session_state.started:
         st.session_state.results = []
         p0 = st.session_state.prospects[st.session_state.index]
         st.session_state.amounts = generate_sure_amounts(p0, phase=1)
-        st.rerun()
     st.stop()
 
 # ---------- Show any violation message from callback ----------
@@ -303,7 +388,6 @@ if st.button("Continue", type="primary", use_container_width=True):
         st.session_state.phase = 2
         st.session_state.current_choices = [None] * 7
         st.session_state.amounts = generate_sure_amounts(prospect, phase=2, phase1_choices=choices)
-        st.rerun()
     else:
         ce = compute_certainty_equivalent(choices, amounts)
         risk_att = risk_attitude_from_ce(ce, ev)
@@ -323,7 +407,6 @@ if st.button("Continue", type="primary", use_container_width=True):
         if st.session_state.index < total:
             nxt = st.session_state.prospects[st.session_state.index]
             st.session_state.amounts = generate_sure_amounts(nxt, phase=1)
-            st.rerun()
 
 # ---------- End ----------
 if st.session_state.index >= total:
